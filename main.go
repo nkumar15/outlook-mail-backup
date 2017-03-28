@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -11,7 +12,7 @@ import (
 )
 
 const (
-	HOST          = "https://login.microsoftonline.com/"
+	AUTH_HOST     = "https://login.microsoftonline.com/"
 	TENANT        = "consumers"
 	AUTH_URI      = "/oauth2/v2.0/authorize?"
 	RESPONSE_TYPE = "code"
@@ -20,15 +21,84 @@ const (
 
 	TOKEN_URI     = "/oauth2/v2.0/token"
 	CLIENT_ID     = "e070a02d-b02f-4698-9db7-b75f4b0f30d6"
-	SCOPE         = "Mail.Read"
+	SCOPE         = "User.Read"
 	REDIRECT_URI  = "http://localhost:5000/auth/callback/outlook"
 	GRANT_TYPE    = "authorization_code"
 	CLIENT_SECRET = "HRFahPr05inQgK8vJSYMoxQ"
+
+	GRAPH_HOST    = "https://graph.microsoft.com/"
+	GRAPH_VERSION = "v1.0/"
 )
+
+type GraphToken struct {
+	TokenType    string `json:"token_type"`
+	Scope        string `json:"scope"`
+	ExpiresIn    uint   `json:"expires_in"`
+	ExtExpiresIn uint   `json:"ext_expires_in"`
+	AccessToken  string `json:"access_token"`
+}
+
+type User struct {
+	Name          string `json:"givenName"`
+	SurName       string `json:"surname"`
+	DisplayName   string `json:"displayName"`
+	Id            string `json:"id"`
+	PrincipleName string `json:"userPrincipalName"`
+}
+
+type EmailAddress struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
+}
+
+type EmailBody struct {
+	ContentType string `json:"contentType"`
+	content     string `json:"content"`
+}
+
+type Message struct {
+	Id           string         `json:"id"`
+	CreateDate   string         `json:"createdDateTime"`
+	SentDate     string         `json:"sentDateTime"`
+	RecievedDate string         `json:"recievedDateTime"`
+	Subject      string         `json:"subject"`
+	Preview      string         `json:"bodyPreview"`
+	IsRead       bool           `json:"isRead"`
+	IsDraft      bool           `json:"isDraft"`
+	Body         EmailBody      `json:"body"`
+	Sender       EmailAddress   `json:"sender"`
+	Recipients   []EmailAddress `json:"toRecipients"`
+}
+
+type MessageList struct {
+	Context  string    `json:"@odata.context"`
+	NextLink string    `json:"@odata.nextLink"`
+	Value    []Message `json:"value"`
+}
+
+func toGraphToken(body []byte) (*GraphToken, error) {
+
+	var token = new(GraphToken)
+	if err := json.Unmarshal(body, &token); err != nil {
+		return nil, err
+	}
+
+	return token, nil
+}
+
+func toUser(body []byte) (*User, error) {
+
+	var user = new(User)
+	if err := json.Unmarshal(body, &user); err != nil {
+		return nil, err
+	}
+
+	return user, nil
+}
 
 func getAuthCode() (string, error) {
 
-	request := HOST + TENANT + AUTH_URI +
+	request := AUTH_HOST + TENANT + AUTH_URI +
 		"client_id=" + CLIENT_ID +
 		`&response_type=` + RESPONSE_TYPE +
 		`&redirect_uri=` + REDIRECT_URI +
@@ -64,8 +134,9 @@ func getAuthCode() (string, error) {
 	return code, nil
 }
 
-func getAccessToken(authCode string) (string, error) {
-	hostUrl := HOST + TENANT + TOKEN_URI
+func getAccessToken(authCode string) (*GraphToken, error) {
+
+	hostUrl := AUTH_HOST + TENANT + TOKEN_URI
 
 	body := url.Values{}
 	body.Add("client_id", CLIENT_ID)
@@ -84,22 +155,77 @@ func getAccessToken(authCode string) (string, error) {
 	resp, err := client.Do(req)
 
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if resp.StatusCode != 200 {
-		return "", errors.New(resp.Status)
+		return nil, errors.New(resp.Status)
 	}
 
 	defer resp.Body.Close()
-	respBodyBytes, err := ioutil.ReadAll(resp.Body)
+
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	respBody := string(respBodyBytes[:])
-	return respBody, nil
+	var token *GraphToken
+	token, err = toGraphToken(bodyBytes)
+	if err != nil {
+		return nil, err
+	}
 
+	return token, nil
+}
+
+func printAccesstoken(token *GraphToken) {
+	fmt.Println("Access token*****************")
+	fmt.Println(token.AccessToken)
+	fmt.Println("*****************************")
+}
+
+func getUserInfo(token string) (*User, error) {
+
+	graphUrl := GRAPH_HOST + GRAPH_VERSION + "me"
+
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", graphUrl, nil)
+
+	req.Header.Add("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(req)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != 200 {
+		return nil, errors.New(resp.Status)
+	}
+
+	defer resp.Body.Close()
+
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var user *User
+	user, err = toUser(bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	return user, nil
+}
+
+func printUserInfo(user *User) {
+	fmt.Println("User info********************")
+	fmt.Println("Id: " + user.Id)
+	fmt.Println("Name: " + user.Name)
+	fmt.Println("Email: " + user.PrincipleName)
+	fmt.Println("Display name: " + user.DisplayName)
+	fmt.Println("*****************************")
 }
 
 func main() {
@@ -109,13 +235,22 @@ func main() {
 		log.Println("Trouble getting Authorization code:", err)
 		return
 	}
-	fmt.Println("AuthCode", authCode)
-	accessToken, err := getAccessToken(authCode)
+
+	token, err := getAccessToken(authCode)
 	if err != nil {
 		log.Println("Trouble getting Access token", err)
 		return
 	}
+	printAccesstoken(token)
+	fmt.Println()
 
-	fmt.Println(accessToken)
+	user, err := getUserInfo(token.AccessToken)
+	if err != nil {
+		log.Println("Trouble getting User info", err)
+		return
+	}
+
+	printUserInfo(user)
+	fmt.Println()
 
 }
